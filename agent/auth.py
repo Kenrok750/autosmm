@@ -2,7 +2,7 @@ import os
 import json
 from playwright.sync_api import sync_playwright
 
-STATE_FILE = "state.json"
+from agent.config import STATE_FILE, HEADLESS
 
 def perform_auth():
     """
@@ -18,29 +18,25 @@ def perform_auth():
     print("=" * 50)
 
     with sync_playwright() as p:
-        # We need a non-headless browser so the user can interact
         browser = p.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
 
         page.goto("https://accounts.google.com/signin")
 
-        # We wait for the user to close the page manually.
-        # This gives them infinite time to log in and pass 2FA/Captchas.
         try:
             page.wait_for_event("close", timeout=0)
         except Exception as e:
-            pass # Handle timeout or manual close gracefully
+            pass
 
         print("Окно закрыто. Сохраняем сессию...")
 
-        # Save state to file
         context.storage_state(path=STATE_FILE)
         browser.close()
         print(f"Сессия успешно сохранена в файл '{STATE_FILE}'.")
         print("Теперь вы можете запускать main.py!")
 
-def get_browser_context(playwright, headless=False):
+def get_browser_context(playwright):
     """
     Returns a browser context. If state.json exists, it loads it.
     Otherwise, it prompts the user to run auth.py first.
@@ -48,8 +44,7 @@ def get_browser_context(playwright, headless=False):
     if not os.path.exists(STATE_FILE):
         raise FileNotFoundError(f"Файл '{STATE_FILE}' не найден. Пожалуйста, сначала запустите 'python agent/auth.py' для авторизации.")
 
-    browser = playwright.chromium.launch(headless=headless)
-    # Load the state
+    browser = playwright.chromium.launch(headless=HEADLESS)
     context = browser.new_context(storage_state=STATE_FILE)
     return browser, context
 

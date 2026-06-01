@@ -1,0 +1,8 @@
+state.json
+.env
+runs/
+*.mp4
+*.webm
+__pycache__/
+*.pyc
+.pytest_cache/
