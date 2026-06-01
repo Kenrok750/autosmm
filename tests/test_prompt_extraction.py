@@ -32,6 +32,17 @@ I hope this helps.'''
     assert data["improved_prompt"] == "Cinematic shot"
     assert data["score"] == 9
 
+def test_extract_json_with_extra_braces():
+    response = '''Some text with {braces}.
+{
+  "improved_prompt": "Cinematic shot",
+  "score": 9
+}
+More text with {braces}.'''
+    data = extract_evaluation_from_response(response)
+    assert data["improved_prompt"] == "Cinematic shot"
+    assert data["score"] == 9
+
 def test_invalid_json():
     response = '{"improved_prompt": "Cinematic shot", "score": 9' # Missing closing brace
     with pytest.raises(ValueError, match="Failed to parse JSON"):

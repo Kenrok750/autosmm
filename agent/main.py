@@ -1,12 +1,14 @@
 import sys
 import json
 import logging
+import argparse
 from playwright.sync_api import sync_playwright
 
 from agent.auth import get_browser_context
 from agent.gemini import get_initial_prompt, evaluate_video, extract_initial_prompt_from_response, extract_evaluation_from_response
 from agent.vids import generate_video
-from agent.config import MAX_ITERATIONS, MIN_ACCEPTABLE_SCORE
+from agent.config import MAX_ITERATIONS as DEFAULT_MAX_ITERATIONS
+from agent.config import MIN_ACCEPTABLE_SCORE as DEFAULT_MIN_ACCEPTABLE_SCORE
 from agent.storage import RunStorage
 
 # Setup basic logging
@@ -25,7 +27,20 @@ def capture_screenshot(page, storage, filename):
         logger.error(f"Не удалось сохранить скриншот: {e}")
 
 def main():
-    product_url = input("Введите ссылку на товар (например, Wildberries): ").strip()
+    parser = argparse.ArgumentParser(description="Автономный агент для создания Reels через Gemini и Google Vids")
+    parser.add_argument("--url", type=str, help="Ссылка на товар")
+    parser.add_argument("--iterations", type=int, default=DEFAULT_MAX_ITERATIONS, help="Максимальное количество итераций")
+    parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_ACCEPTABLE_SCORE, help="Минимальная приемлемая оценка")
+
+    args = parser.parse_args()
+
+    product_url = args.url
+    max_iterations = args.iterations
+    min_acceptable_score = args.min_score
+
+    if not product_url:
+        product_url = input("Введите ссылку на товар (например, Wildberries): ").strip()
+
     if not product_url:
         logger.error("Ссылка не может быть пустой.")
         return
@@ -66,8 +81,8 @@ def main():
         iteration = 1
         best_score_reached = False
 
-        while iteration <= MAX_ITERATIONS and not best_score_reached:
-            logger.info(f"\n=== ИТЕРАЦИЯ {iteration} ИЗ {MAX_ITERATIONS} ===")
+        while iteration <= max_iterations and not best_score_reached:
+            logger.info(f"\n=== ИТЕРАЦИЯ {iteration} ИЗ {max_iterations} ===")
 
             # Step 2: Generate video in Google Vids
             try:
@@ -92,8 +107,8 @@ def main():
                 logger.info(f"\n--- ОЦЕНКА И НОВЫЙ ПРОМПТ ---\nОценка: {eval_data.get('score')}\nУлучшенный промпт: {eval_data['improved_prompt']}\n------------------------------------------\n")
 
                 current_score = float(eval_data.get("score", 0))
-                if current_score >= MIN_ACCEPTABLE_SCORE:
-                     logger.info(f"Достигнута минимальная приемлемая оценка ({current_score} >= {MIN_ACCEPTABLE_SCORE}). Остановка цикла.")
+                if current_score >= min_acceptable_score:
+                     logger.info(f"Достигнута минимальная приемлемая оценка ({current_score} >= {min_acceptable_score}). Остановка цикла.")
                      best_score_reached = True
                      storage.update_status("stopped_score_reached")
                      break
@@ -107,8 +122,8 @@ def main():
                  storage.update_status("failed")
                  break
 
-            if iteration == MAX_ITERATIONS:
-                logger.info(f"\nДостигнут лимит в {MAX_ITERATIONS} итераций. Последнее видео: {video_path}")
+            if iteration == max_iterations:
+                logger.info(f"\nДостигнут лимит в {max_iterations} итераций. Последнее видео: {video_path}")
                 storage.update_status("stopped_max_iterations")
                 break
 

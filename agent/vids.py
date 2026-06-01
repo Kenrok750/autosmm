@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 def generate_video(page: Page, prompt: str, iteration: int, output_video_path: str) -> str:
     """
     Navigates to Google Vids, inputs the prompt, generates the video,
-    downloads it, and saves it to output_video_path.
+    downloads it, saves it to output_video_path, and validates the file.
     """
     logger.info(f"Генерация видео в Google Vids (итерация {iteration})...")
 
@@ -56,18 +56,24 @@ def generate_video(page: Page, prompt: str, iteration: int, output_video_path: s
             download = download_info.value
             download.save_as(output_video_path)
             logger.info(f"Видео успешно скачано: {output_video_path}")
-            return output_video_path
         else:
              logger.warning("Кнопка 'Экспорт' не найдена.")
 
     except Exception as e:
         logger.error(f"Ошибка при попытке скачать видео: {e}")
 
-    logger.info("Автоматическое скачивание не удалось. Пожалуйста, скачайте видео вручную.")
-    logger.info(f"Сохраните его по пути '{output_video_path}'. Ожидание 60 секунд...")
-    time.sleep(60)
+    if not os.path.exists(output_video_path):
+        logger.info("Автоматическое скачивание не удалось. Пожалуйста, скачайте видео вручную.")
+        logger.info(f"Сохраните его по пути '{output_video_path}'. Ожидание 60 секунд...")
+        time.sleep(60)
 
-    if os.path.exists(output_video_path):
-        return output_video_path
-    else:
-        raise Exception("Файл видео не найден. Цикл прерван.")
+    # Validation
+    if not os.path.exists(output_video_path):
+        raise FileNotFoundError(f"Файл видео не найден по пути: {output_video_path}. Цикл прерван.")
+
+    file_size = os.path.getsize(output_video_path)
+    if file_size <= 1024:
+        raise ValueError(f"Сгенерированный файл видео слишком мал ({file_size} байт). Возможно, произошла ошибка экспорта.")
+
+    logger.info(f"Видео валидировано. Размер: {file_size} байт.")
+    return output_video_path

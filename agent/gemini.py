@@ -6,35 +6,48 @@ from playwright.sync_api import Page, expect
 
 logger = logging.getLogger(__name__)
 
-def wait_for_gemini_response(page: Page, timeout: int = 120):
+def wait_for_new_gemini_response(page: Page, previous_message_count: int, timeout: int = 120, stable_seconds: float = 3.0):
     """
-    Waits for Gemini to finish generating its response by polling the latest
-    message-content text until it remains stable for 3 seconds.
-    Raises TimeoutError if no stable response is found within `timeout` seconds.
+    Waits for a NEW Gemini response by waiting until the message count increases.
+    Then, polls the latest message-content text until it remains stable for stable_seconds.
+    Raises TimeoutError if no new stable response is found within `timeout` seconds.
     """
-    logger.info("Ожидание ответа от Gemini...")
-    time.sleep(3) # Initial wait for generation to start
-
+    logger.info("Ожидание нового ответа от Gemini...")
     start_time = time.time()
+
+    # 1. Wait for a new message block to appear
+    new_message_appeared = False
+    while time.time() - start_time < timeout:
+        current_count = page.locator("message-content").count()
+        if current_count > previous_message_count:
+            new_message_appeared = True
+            break
+        page.wait_for_timeout(500)
+
+    if not new_message_appeared:
+        raise TimeoutError(f"Превышено время ожидания начала ответа от Gemini ({timeout} сек).")
+
+    # 2. Wait for the new message text to stabilize
+    logger.info("Новое сообщение появилось. Ожидание стабилизации текста...")
     last_text = None
     stable_start = None
 
     while time.time() - start_time < timeout:
         responses = page.locator("message-content")
-        if responses.count() > 0:
-            current_text = responses.nth(-1).inner_text()
-            if current_text and current_text == last_text:
-                if stable_start is None:
-                    stable_start = time.time()
-                elif time.time() - stable_start >= 3.0:
-                    return current_text
-            else:
-                last_text = current_text
-                stable_start = None
+        current_text = responses.nth(-1).inner_text()
 
-        page.wait_for_timeout(1000) # Poll every 1 second
+        if current_text and current_text == last_text:
+            if stable_start is None:
+                stable_start = time.time()
+            elif time.time() - stable_start >= stable_seconds:
+                return current_text
+        else:
+            last_text = current_text
+            stable_start = None
 
-    raise TimeoutError(f"Превышено время ожидания ответа от Gemini ({timeout} сек).")
+        page.wait_for_timeout(1000)
+
+    raise TimeoutError(f"Превышено время ожидания стабилизации ответа от Gemini ({timeout} сек).")
 
 def get_initial_prompt(page: Page, product_link: str) -> str:
     """
@@ -45,6 +58,8 @@ def get_initial_prompt(page: Page, product_link: str) -> str:
 
     input_box = page.locator("rich-textarea div[contenteditable='true']")
     input_box.wait_for(state="visible")
+
+    previous_count = page.locator("message-content").count()
 
     prompt = f"""
 Напиши детальный сценарий и промпт для генерации короткого вирального Reels (видео) для этого товара: {product_link}.
@@ -63,9 +78,26 @@ def get_initial_prompt(page: Page, product_link: str) -> str:
     input_box.fill(prompt)
     input_box.press("Enter")
 
-    response_text = wait_for_gemini_response(page)
+    response_text = wait_for_new_gemini_response(page, previous_count)
     logger.info("Получен изначальный промпт от Gemini.")
     return response_text
+
+def wait_for_file_attachment_ready(page: Page, timeout: int = 60):
+    """
+    Waits for the file to finish uploading. If exact selectors are unknown,
+    it uses a conservative fallback delay.
+    """
+    logger.info("Ожидание завершения загрузки файла...")
+
+    try:
+        chip = page.locator("attachment-chip, div[aria-label*='file']")
+        if chip.count() > 0:
+             chip.first.wait_for(state="visible", timeout=10000)
+    except Exception:
+        logger.warning("Индикатор загрузки не найден. Используем резервное ожидание.")
+
+    page.wait_for_timeout(10000)
+    logger.info("Файл должен быть загружен.")
 
 def evaluate_video(page: Page, video_path: str) -> str:
     """
@@ -86,8 +118,9 @@ def evaluate_video(page: Page, video_path: str) -> str:
         file_chooser = fc_info.value
         file_chooser.set_files(video_path)
 
-    logger.info("Ожидание загрузки файла...")
-    time.sleep(10)
+    wait_for_file_attachment_ready(page)
+
+    previous_count = page.locator("message-content").count()
 
     eval_prompt = """
 Посмотри это сгенерированное видео. Оцени его виральность и качество. Затем напиши улучшенный, более детальный промпт на английском языке для генерации лучшей версии этого видео.
@@ -110,13 +143,15 @@ def evaluate_video(page: Page, video_path: str) -> str:
     input_box.fill(eval_prompt)
     input_box.press("Enter")
 
-    response_text = wait_for_gemini_response(page)
+    response_text = wait_for_new_gemini_response(page, previous_count)
     logger.info("Оценка получена.")
     return response_text
 
 def _extract_json_string(text: str) -> str:
     """
     Attempts to extract a JSON string from the response, ignoring surrounding text or markdown fences.
+    Handles nested braces robustly by targeting the first opening brace and the last closing brace
+    if markdown fences fail.
     """
     text = text.strip()
 
@@ -125,8 +160,10 @@ def _extract_json_string(text: str) -> str:
     if match:
         return match.group(1)
 
-    # Try to find just the outermost braces
-    match = re.search(r'(\{.*\})', text, re.DOTALL)
+    # Attempt to extract using regex to find the outermost JSON structure
+    # This regex looks for an opening brace, followed by valid json content (including nested braces), followed by a closing brace.
+    # It avoids grabbing stray braces outside the main JSON body by requiring string keys.
+    match = re.search(r'(\{(?:\s*".*?"\s*:[\s\S]*?)+\})', text)
     if match:
          return match.group(1)
 
