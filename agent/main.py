@@ -1,9 +1,10 @@
 import sys
+import json
 import logging
 from playwright.sync_api import sync_playwright
 
 from agent.auth import get_browser_context
-from agent.gemini import get_initial_prompt, evaluate_video, extract_initial_prompt_from_response, extract_prompt_from_response
+from agent.gemini import get_initial_prompt, evaluate_video, extract_initial_prompt_from_response, extract_evaluation_from_response
 from agent.vids import generate_video
 from agent.config import MAX_ITERATIONS, MIN_ACCEPTABLE_SCORE
 from agent.storage import RunStorage
@@ -79,16 +80,11 @@ def main():
                 storage.update_status("failed")
                 break
 
-            if iteration == MAX_ITERATIONS:
-                logger.info(f"\nДостигнут лимит в {MAX_ITERATIONS} итераций. Последнее видео: {video_path}")
-                storage.record_iteration(iteration, current_prompt, video_path, {})
-                break
-
             # Step 3: Evaluate video in Gemini
             try:
                 gemini_page.bring_to_front()
                 gemini_eval_response = evaluate_video(gemini_page, video_path)
-                eval_data = extract_prompt_from_response(gemini_eval_response)
+                eval_data = extract_evaluation_from_response(gemini_eval_response)
 
                 storage.save_evaluation(f"iter_{iteration:02d}.json", eval_data)
                 storage.record_iteration(iteration, current_prompt, video_path, eval_data)
@@ -99,6 +95,8 @@ def main():
                 if current_score >= MIN_ACCEPTABLE_SCORE:
                      logger.info(f"Достигнута минимальная приемлемая оценка ({current_score} >= {MIN_ACCEPTABLE_SCORE}). Остановка цикла.")
                      best_score_reached = True
+                     storage.update_status("stopped_score_reached")
+                     break
                 else:
                      current_prompt = eval_data["improved_prompt"]
                      storage.save_prompt(f"iter_{iteration:02d}_improved.json", json.dumps({"improved_prompt": current_prompt}, ensure_ascii=False, indent=2))
@@ -106,14 +104,23 @@ def main():
             except Exception as e:
                  logger.error(f"Ошибка при оценке видео в Gemini: {e}")
                  capture_screenshot(gemini_page, storage, f"error_gemini_eval_iter_{iteration}.png")
+                 storage.update_status("failed")
                  break
+
+            if iteration == MAX_ITERATIONS:
+                logger.info(f"\nДостигнут лимит в {MAX_ITERATIONS} итераций. Последнее видео: {video_path}")
+                storage.update_status("stopped_max_iterations")
+                break
 
             iteration += 1
 
-        if storage.state["status"] != "failed":
+        if storage.state["status"] not in ["failed", "stopped_score_reached", "stopped_max_iterations"]:
+            # Fallback if loop ends unexpectedly
             storage.update_status("completed")
+
         logger.info("\nЦикл завершен.")
         logger.info(f"Все результаты сохранены в папке: {storage.run_dir}")
+        logger.info(f"Финальный статус: {storage.state['status']}")
 
         gemini_page.wait_for_timeout(5000)
         browser.close()

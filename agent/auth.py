@@ -1,5 +1,4 @@
 import os
-import json
 from playwright.sync_api import sync_playwright
 
 from agent.config import STATE_FILE, HEADLESS
@@ -14,7 +13,6 @@ def perform_auth():
     print("Пожалуйста, войдите в свой аккаунт Google.")
     print("Решите все капчи, если они появятся.")
     print("Убедитесь, что у вас есть доступ к Gemini Advanced и Google Vids.")
-    print("Когда закончите авторизацию, ПРОСТО ЗАКРОЙТЕ ОКНО БРАУЗЕРА.")
     print("=" * 50)
 
     with sync_playwright() as p:
@@ -24,17 +22,14 @@ def perform_auth():
 
         page.goto("https://accounts.google.com/signin")
 
-        try:
-            page.wait_for_event("close", timeout=0)
-        except Exception as e:
-            pass
+        input("\nКогда закончите авторизацию и увидите главную страницу Google, нажмите Enter в этой консоли...\n")
 
-        print("Окно закрыто. Сохраняем сессию...")
+        print("Сохраняем сессию...")
 
         context.storage_state(path=STATE_FILE)
         browser.close()
         print(f"Сессия успешно сохранена в файл '{STATE_FILE}'.")
-        print("Теперь вы можете запускать main.py!")
+        print("Теперь вы можете запускать основной скрипт!")
 
 def get_browser_context(playwright):
     """
@@ -42,7 +37,7 @@ def get_browser_context(playwright):
     Otherwise, it prompts the user to run auth.py first.
     """
     if not os.path.exists(STATE_FILE):
-        raise FileNotFoundError(f"Файл '{STATE_FILE}' не найден. Пожалуйста, сначала запустите 'python agent/auth.py' для авторизации.")
+        raise FileNotFoundError(f"Файл '{STATE_FILE}' не найден. Пожалуйста, сначала запустите 'python -m agent.auth' для авторизации.")
 
     browser = playwright.chromium.launch(headless=HEADLESS)
     context = browser.new_context(storage_state=STATE_FILE)

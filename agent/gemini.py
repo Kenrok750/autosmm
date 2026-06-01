@@ -6,19 +6,35 @@ from playwright.sync_api import Page, expect
 
 logger = logging.getLogger(__name__)
 
-def wait_for_gemini_response(page: Page):
+def wait_for_gemini_response(page: Page, timeout: int = 120):
     """
-    Waits for Gemini to finish generating its response.
+    Waits for Gemini to finish generating its response by polling the latest
+    message-content text until it remains stable for 3 seconds.
+    Raises TimeoutError if no stable response is found within `timeout` seconds.
     """
     logger.info("Ожидание ответа от Gemini...")
-    time.sleep(3)
-    page.wait_for_timeout(10000)
+    time.sleep(3) # Initial wait for generation to start
 
-    responses = page.locator("message-content")
-    if responses.count() > 0:
-        latest_response = responses.nth(-1).inner_text()
-        return latest_response
-    return "{}"
+    start_time = time.time()
+    last_text = None
+    stable_start = None
+
+    while time.time() - start_time < timeout:
+        responses = page.locator("message-content")
+        if responses.count() > 0:
+            current_text = responses.nth(-1).inner_text()
+            if current_text and current_text == last_text:
+                if stable_start is None:
+                    stable_start = time.time()
+                elif time.time() - stable_start >= 3.0:
+                    return current_text
+            else:
+                last_text = current_text
+                stable_start = None
+
+        page.wait_for_timeout(1000) # Poll every 1 second
+
+    raise TimeoutError(f"Превышено время ожидания ответа от Gemini ({timeout} сек).")
 
 def get_initial_prompt(page: Page, product_link: str) -> str:
     """
@@ -129,7 +145,7 @@ def extract_initial_prompt_from_response(response_text: str) -> dict:
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse JSON from response. Raw response: {response_text}. Error: {e}")
 
-def extract_prompt_from_response(response_text: str) -> dict:
+def extract_evaluation_from_response(response_text: str) -> dict:
     """
     Extracts the evaluation JSON and ensures improved_prompt is present.
     Returns the parsed JSON dictionary.
@@ -142,3 +158,6 @@ def extract_prompt_from_response(response_text: str) -> dict:
         return data
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse JSON from evaluation response. Raw response: {response_text}. Error: {e}")
+
+# Backward compatibility alias
+extract_prompt_from_response = extract_evaluation_from_response

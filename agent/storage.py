@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from datetime import datetime
 import re
 
@@ -20,19 +21,17 @@ class RunStorage:
     def init_run(self, input_url: str):
         os.makedirs(self.base_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # simple safe slug
         slug = re.sub(r'[^a-zA-Z0-9]', '_', input_url)[:20]
+        uid = uuid.uuid4().hex[:6]
 
-        self.run_dir = os.path.join(self.base_dir, f"{timestamp}_{slug}")
+        self.run_dir = os.path.join(self.base_dir, f"{timestamp}_{slug}_{uid}")
         os.makedirs(self.run_dir, exist_ok=True)
 
-        # Create subdirectories
         for sub in ["prompts", "videos", "evaluations", "screenshots", "traces"]:
             os.makedirs(os.path.join(self.run_dir, sub), exist_ok=True)
 
         self.state_file = os.path.join(self.run_dir, "run_state.json")
 
-        # Save initial input
         input_file = os.path.join(self.run_dir, "input.json")
         with open(input_file, "w", encoding="utf-8") as f:
             json.dump({"original_url": input_url, "timestamp": timestamp}, f, indent=4)

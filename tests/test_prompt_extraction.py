@@ -1,9 +1,9 @@
 import pytest
-from agent.gemini import extract_initial_prompt_from_response, extract_prompt_from_response
+from agent.gemini import extract_initial_prompt_from_response, extract_evaluation_from_response
 
 def test_extract_pure_json():
     response = '{"improved_prompt": "A sunny day on the beach, 4k, realistic"}'
-    data = extract_prompt_from_response(response)
+    data = extract_evaluation_from_response(response)
     assert data["improved_prompt"] == "A sunny day on the beach, 4k, realistic"
 
 def test_extract_markdown_fenced_json():
@@ -17,7 +17,7 @@ Here is the evaluation:
 ```
 Good luck!
 '''
-    data = extract_prompt_from_response(response)
+    data = extract_evaluation_from_response(response)
     assert data["score"] == 8
     assert data["improved_prompt"] == "Better prompt"
 
@@ -28,19 +28,19 @@ def test_extract_text_before_after_json():
   "score": 9
 }
 I hope this helps.'''
-    data = extract_prompt_from_response(response)
+    data = extract_evaluation_from_response(response)
     assert data["improved_prompt"] == "Cinematic shot"
     assert data["score"] == 9
 
 def test_invalid_json():
     response = '{"improved_prompt": "Cinematic shot", "score": 9' # Missing closing brace
     with pytest.raises(ValueError, match="Failed to parse JSON"):
-        extract_prompt_from_response(response)
+        extract_evaluation_from_response(response)
 
 def test_missing_improved_prompt():
     response = '{"score": 9, "reason": "Good"}'
     with pytest.raises(ValueError, match="Missing 'improved_prompt'"):
-        extract_prompt_from_response(response)
+        extract_evaluation_from_response(response)
 
 def test_extract_initial_prompt_pure_json():
     response = '{"initial_prompt": "First prompt", "hook": "Look here!"}'

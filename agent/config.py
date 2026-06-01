@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Base configurations
 MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", 5))
