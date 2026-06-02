@@ -2,125 +2,200 @@ import streamlit as st
 import os
 import json
 import subprocess
-import threading
-from agent.main import run_agent_cycle
-from agent.config import MAX_ITERATIONS, MIN_ACCEPTABLE_SCORE, STATE_FILE, OUTPUT_DIR
+from playwright.sync_api import sync_playwright
 
-st.set_page_config(page_title="AI Reels Agent", page_icon="🎬", layout="wide")
+from agent.scraper import scrape_wb_products
+from agent.auth import get_browser_context
+from agent.main import setup_run, run_single_iteration
+from agent.config import STATE_FILE, OUTPUT_DIR
+from agent.storage import RunStorage
 
-st.title("🎬 AI Reels Agent: Gemini + Google Vids")
-st.markdown("Этот локальный агент автоматизирует создание коротких видеороликов.")
+st.set_page_config(page_title="Reels Factory", page_icon="🎬", layout="wide")
 
-# ---- Sidebar Configuration ----
-st.sidebar.header("Настройки запуска")
+st.title("🎬 Фабрика Reels: Автоматизация контента")
+st.markdown("Спарсите свои товары, сгенерируйте сценарий через Gemini, создайте видео в Google Vids и выберите лучший результат.")
 
-# Auth Status Check
-auth_status = "✅ Авторизован" if os.path.exists(STATE_FILE) else "❌ Не авторизован"
-st.sidebar.markdown(f"**Статус сессии:** {auth_status}")
+# ---- CSS / Styling ----
+st.markdown("""
+<style>
+.video-container {
+    border: 2px solid #4CAF50;
+    border-radius: 10px;
+    padding: 10px;
+    background-color: #f9f9f9;
+}
+</style>
+""", unsafe_allow_html=True)
 
-if not os.path.exists(STATE_FILE):
-    st.sidebar.warning("Вам необходимо пройти авторизацию перед запуском.")
-    if st.sidebar.button("Запустить авторизацию в терминале"):
-        st.sidebar.info("Откройте терминал, где запущен Streamlit, и следуйте инструкциям!")
-        # Run auth script
-        subprocess.Popen(["python", "-m", "agent.auth"])
+# ---- Session State Init ----
+if "stage" not in st.session_state:
+    st.session_state.stage = "scraping" # scraping -> ready_to_generate -> iterating -> done
+if "products" not in st.session_state:
+    st.session_state.products = []
+if "selected_product_url" not in st.session_state:
+    st.session_state.selected_product_url = ""
+if "current_run_dir" not in st.session_state:
+    st.session_state.current_run_dir = None
 
-st.sidebar.divider()
-
-url_input = st.sidebar.text_input("Ссылка на товар (Wildberries и т.д.):", "https://www.wildberries.ru/catalog/1050994766/detail.aspx")
-iterations_input = st.sidebar.slider("Максимальное количество итераций:", min_value=1, max_value=10, value=MAX_ITERATIONS)
-score_input = st.sidebar.slider("Минимальная приемлемая оценка (1-10):", min_value=1.0, max_value=10.0, value=MIN_ACCEPTABLE_SCORE, step=0.5)
-
-# ---- Main Area: Execution ----
-st.header("Управление")
-
-if "is_running" not in st.session_state:
-    st.session_state.is_running = False
-
-# We need a placeholder for dynamic updates
-status_placeholder = st.empty()
-log_container = st.container()
-results_container = st.container()
-
-def progress_callback(update):
+# ---- Helper Callbacks ----
+def notify_progress(update):
     msg_type = update.get("type")
     msg = update.get("message")
     data = update.get("data")
 
     if msg_type == "info":
-        status_placeholder.info(f"⏳ {msg}")
+        st.info(f"⏳ {msg}")
     elif msg_type == "error":
-        status_placeholder.error(f"❌ {msg}")
-    elif msg_type == "prompt":
-        with log_container.expander("Исходный промпт (JSON)", expanded=False):
-            st.json(data)
-    elif msg_type == "eval":
-        with log_container.expander(f"Оценка Gemini (Оценка: {data.get('score')})", expanded=True):
-            st.json(data)
-    elif msg_type == "video":
-        with log_container.expander("Сгенерировано видео", expanded=True):
-            st.success(msg)
-    elif msg_type == "done":
-        st.session_state.is_running = False
-        status_placeholder.success(f"✅ {msg} (Статус: {data.get('final_status')})")
+        st.error(f"❌ {msg}")
 
-        # Show final video if available
-        if data.get('final_video') and os.path.exists(data['final_video']):
-             with results_container:
-                 st.subheader("Финальное видео")
-                 st.video(data['final_video'])
+# ---- Sidebar Configuration ----
+with st.sidebar:
+    st.header("Настройки")
+    auth_status = "✅ Авторизован" if os.path.exists(STATE_FILE) else "❌ Не авторизован"
+    st.markdown(f"**Статус:** {auth_status}")
 
-if st.button("🚀 Запустить генерацию", disabled=st.session_state.is_running or not os.path.exists(STATE_FILE)):
-    st.session_state.is_running = True
-    status_placeholder.info("Подготовка к запуску...")
+    if not os.path.exists(STATE_FILE):
+        st.warning("Пройдите авторизацию!")
+        if st.button("Запустить авторизацию (терминал)"):
+            subprocess.Popen(["python", "-m", "agent.auth"])
 
-    with st.spinner("Агент работает... Пожалуйста, не закрывайте вкладку."):
-        # Run in the main thread (Streamlit will wait until done, which is fine for our use case)
-        # Using a separate thread requires complex state queueing for Streamlit.
-        storage = run_agent_cycle(
-            product_url=url_input,
-            max_iterations=iterations_input,
-            min_acceptable_score=score_input,
-            progress_callback=progress_callback
-        )
+    st.divider()
+    if st.button("🔄 Начать всё заново"):
+        st.session_state.stage = "scraping"
+        st.session_state.current_run_dir = None
+        st.rerun()
 
-    st.session_state.is_running = False
+# ---- Stage 1: Scraping ----
+if st.session_state.stage == "scraping":
+    st.header("1. Сбор товаров")
+    seller_url = st.text_input("Ссылка на магазин/продавца WB:", "https://www.wildberries.ru/seller/444343")
+
+    if st.button("🔍 Спарсить товары", disabled=not os.path.exists(STATE_FILE)):
+        with st.spinner("Запускаем браузер для парсинга..."):
+            with sync_playwright() as p:
+                try:
+                    browser, context = get_browser_context(p)
+                    page = context.new_page()
+                    products = scrape_wb_products(page, seller_url)
+                    st.session_state.products = products
+                    browser.close()
+                except Exception as e:
+                    st.error(f"Ошибка при парсинге: {e}")
+
+    if st.session_state.products:
+        st.success(f"Найдено товаров: {len(st.session_state.products)}")
+        product_options = {p["title"]: p["url"] for p in st.session_state.products}
+        selected_title = st.selectbox("Выберите товар для генерации Reels:", list(product_options.keys()))
+
+        if st.button("Перейти к генерации"):
+            st.session_state.selected_product_url = product_options[selected_title]
+            st.session_state.stage = "ready_to_generate"
+            st.rerun()
+
+# ---- Stage 2: Ready to Generate (Setup Run) ----
+elif st.session_state.stage == "ready_to_generate":
+    st.header("2. Генерация сценария")
+    st.info(f"Выбран товар: {st.session_state.selected_product_url}")
+
+    if st.button("🪄 Составить сценарий (Gemini)"):
+        with st.spinner("Анализ трендов и написание сценария..."):
+            storage = setup_run(st.session_state.selected_product_url, notify_progress)
+            if storage and storage.state["status"] == "ready_for_iteration":
+                st.session_state.current_run_dir = storage.run_dir
+                st.session_state.stage = "iterating"
+                st.rerun()
+
+# ---- Stage 3: Iterating (Human in the Loop) ----
+elif st.session_state.stage == "iterating":
+    st.header("3. Генерация и Оценка")
+
+    storage = RunStorage.load(st.session_state.current_run_dir)
+    iterations = storage.state.get("iterations", [])
+
+    # Display the current prompt
+    with st.expander("Текущий сценарий / Промпт", expanded=False):
+        st.write(storage.get_latest_prompt())
+
+    # If we are waiting for user action (after an iteration)
+    if storage.state["status"] == "awaiting_user_approval":
+        last_iter = iterations[-1]
+
+        st.markdown("### Результат генерации")
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.markdown("<div class='video-container'>", unsafe_allow_html=True)
+            if os.path.exists(last_iter["video_path"]):
+                st.video(last_iter["video_path"])
+            else:
+                st.warning("Файл видео не найден.")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with col2:
+            eval_data = last_iter.get("evaluation", {})
+            st.metric(label="Оценка Gemini", value=f"{eval_data.get('score', 0)} / 10")
+            st.write(f"**Вердикт:** {eval_data.get('reason', '')}")
+            if eval_data.get("problems"):
+                st.write("**Что улучшить:**")
+                for p in eval_data["problems"]:
+                    st.write(f"- {p}")
+
+            st.markdown("---")
+            st.write("Что делаем дальше?")
+
+            # Action Buttons
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✅ ОК, берем это!", type="primary"):
+                    storage.update_status("completed")
+                    st.session_state.stage = "done"
+                    st.rerun()
+            with c2:
+                if st.button("🔄 Переделать (Итерация +1)"):
+                    storage.update_status("ready_for_iteration")
+                    st.rerun()
+
+    # If we are ready to run the next iteration
+    elif storage.state["status"] == "ready_for_iteration":
+        iter_num = len(iterations) + 1
+        st.info(f"Готов к запуску Итерации #{iter_num}.")
+        if st.button("🎬 Сгенерировать видео"):
+            with st.spinner(f"Работа агента (Итерация {iter_num}). Это может занять несколько минут..."):
+                storage = run_single_iteration(storage, notify_progress)
+                st.rerun()
+
+    elif storage.state["status"] == "failed":
+        st.error("Произошла ошибка во время работы агента. Проверьте логи в терминале.")
+        if st.button("Попробовать снова (Рестарт цикла)"):
+            storage.update_status("ready_for_iteration")
+            st.rerun()
+
+# ---- Stage 4: Done ----
+elif st.session_state.stage == "done":
+    st.header("🎉 Готово!")
+    storage = RunStorage.load(st.session_state.current_run_dir)
+
+    st.success("Вы успешно завершили генерацию Reels!")
+    st.balloons()
+
+    best_video = storage.state.get("best_video_path")
+    if not best_video and storage.state.get("iterations"):
+         # fallback to last video
+         best_video = storage.state["iterations"][-1]["video_path"]
+
+    if best_video and os.path.exists(best_video):
+        st.video(best_video)
+        st.write(f"📁 Видео сохранено: `{best_video}`")
+
+    if st.button("Начать заново с другим товаром"):
+        st.session_state.stage = "scraping"
+        st.rerun()
 
 # ---- History Area ----
-st.divider()
-st.header("📁 История запусков")
-
+st.sidebar.divider()
 if os.path.exists(OUTPUT_DIR):
     runs = sorted(os.listdir(OUTPUT_DIR), reverse=True)
     if runs:
-        selected_run = st.selectbox("Выберите запуск для просмотра:", runs)
-        run_path = os.path.join(OUTPUT_DIR, selected_run)
-        state_file = os.path.join(run_path, "run_state.json")
-
-        if os.path.exists(state_file):
-            with open(state_file, "r", encoding="utf-8") as f:
-                state_data = json.load(f)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Статус:** {state_data.get('status')}")
-                st.write(f"**Лучшая оценка:** {state_data.get('best_score')}")
-
-            with col2:
-                best_video = state_data.get("best_video_path")
-                if best_video and os.path.exists(best_video):
-                    st.video(best_video)
-                else:
-                    st.warning("Финальное видео не найдено в этом запуске.")
-
-            with st.expander("Детали всех итераций"):
-                for it in state_data.get("iterations", []):
-                    st.markdown(f"#### Итерация {it.get('iteration')}")
-                    v_path = it.get('video_path')
-                    if v_path and os.path.exists(v_path):
-                        st.video(v_path)
-                    st.json(it.get("evaluation", {}))
-    else:
-        st.info("История запусков пуста.")
-else:
-    st.info("Директория запусков еще не создана.")
+        with st.sidebar.expander("📁 История запусков"):
+             for run in runs[:5]: # show last 5
+                 st.write(f"- `{run}`")

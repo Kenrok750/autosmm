@@ -85,3 +85,33 @@ class RunStorage:
     def update_status(self, status: str):
         self.state["status"] = status
         self._save_state()
+
+    @classmethod
+    def load(cls, run_dir: str):
+        """Reconstructs a RunStorage object from an existing directory."""
+        storage = cls(os.path.dirname(run_dir))
+        storage.run_dir = run_dir
+        storage.state_file = os.path.join(run_dir, "run_state.json")
+        if os.path.exists(storage.state_file):
+            with open(storage.state_file, "r", encoding="utf-8") as f:
+                storage.state = json.load(f)
+        return storage
+
+    def get_latest_prompt(self) -> str:
+        """Returns the prompt for the next iteration."""
+        if not self.state["iterations"]:
+            # If no iterations yet, look for iter_00_initial.json
+            path = os.path.join(self.run_dir, "prompts", "iter_00_initial.json")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f).get("initial_prompt", "")
+            return ""
+        else:
+            # Look for the improved prompt from the last iteration
+            last_iter = self.state["iterations"][-1]["iteration"]
+            path = os.path.join(self.run_dir, "prompts", f"iter_{last_iter:02d}_improved.json")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f).get("improved_prompt", "")
+            # Fallback to the prompt used in the last iteration if improved is missing
+            return self.state["iterations"][-1].get("prompt", "")
