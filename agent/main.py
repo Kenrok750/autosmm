@@ -57,7 +57,9 @@ def setup_run(product_url: str, progress_callback=None) -> RunStorage:
             storage.update_status("failed")
             return storage
 
+        from playwright_stealth import stealth_sync
         gemini_page = context.new_page()
+        stealth_sync(gemini_page)
 
         notify_cb(progress_callback, "info", "Анализ трендов и получение начального промпта от Gemini...")
         try:
@@ -100,8 +102,11 @@ def run_single_iteration(storage: RunStorage, progress_callback=None):
             storage.update_status("failed")
             return storage
 
+        from playwright_stealth import stealth_sync
         vids_page = context.new_page()
         gemini_page = context.new_page()
+        stealth_sync(vids_page)
+        stealth_sync(gemini_page)
 
         # Step 1: Generate video in Google Vids
         notify_cb(progress_callback, "info", f"Генерация видео в Google Vids...")

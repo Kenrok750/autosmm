@@ -2,3 +2,4 @@ playwright
 pytest
 python-dotenv
 streamlit
+playwright-stealth

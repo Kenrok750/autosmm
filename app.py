@@ -76,7 +76,9 @@ if st.session_state.stage == "scraping":
             with sync_playwright() as p:
                 try:
                     browser, context = get_browser_context(p)
+                    from playwright_stealth import stealth_sync
                     page = context.new_page()
+                    stealth_sync(page)
                     products = scrape_wb_products(page, seller_url)
                     st.session_state.products = products
                     browser.close()
