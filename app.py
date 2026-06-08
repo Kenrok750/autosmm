@@ -57,7 +57,8 @@ with st.sidebar:
     if not os.path.exists(STATE_FILE):
         st.warning("Пройдите авторизацию!")
         if st.button("Запустить авторизацию (терминал)"):
-            subprocess.Popen(["python", "-m", "agent.auth"])
+            import sys
+            subprocess.Popen([sys.executable, "-m", "agent.auth"])
 
     st.divider()
     if st.button("🔄 Начать всё заново"):
