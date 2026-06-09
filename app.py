@@ -1,19 +1,23 @@
 import streamlit as st
 import os
-import json
 import subprocess
 from playwright.sync_api import sync_playwright
 
+import agent.db as db
 from agent.scraper import scrape_wb_products
 from agent.auth import get_browser_context
 from agent.main import setup_run, run_single_iteration
-from agent.config import STATE_FILE, OUTPUT_DIR
+from agent.config import STATE_FILE
 from agent.storage import RunStorage
+from agent.product_bible import DEFAULT_DACHSHUND_BIBLE
+from agent.exporter import export_post_package
+
+# Initialize DB on startup
+db.init_db()
 
 st.set_page_config(page_title="Reels Factory", page_icon="🎬", layout="wide")
 
-st.title("🎬 Фабрика Reels: Автоматизация контента")
-st.markdown("Спарсите свои товары, сгенерируйте сценарий через Gemini, создайте видео в Google Vids и выберите лучший результат.")
+st.title("🎬 Фабрика Reels: Human-in-the-Loop")
 
 # ---- CSS / Styling ----
 st.markdown("""
@@ -27,22 +31,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- Session State Init ----
-if "stage" not in st.session_state:
-    st.session_state.stage = "scraping" # scraping -> ready_to_generate -> iterating -> done
-if "products" not in st.session_state:
-    st.session_state.products = []
-if "selected_product_url" not in st.session_state:
-    st.session_state.selected_product_url = ""
-if "current_run_dir" not in st.session_state:
-    st.session_state.current_run_dir = None
-
 # ---- Helper Callbacks ----
 def notify_progress(update):
     msg_type = update.get("type")
     msg = update.get("message")
-    data = update.get("data")
-
     if msg_type == "info":
         st.info(f"⏳ {msg}")
     elif msg_type == "error":
@@ -60,15 +52,13 @@ with st.sidebar:
             import sys
             subprocess.Popen([sys.executable, "-m", "agent.auth"])
 
-    st.divider()
-    if st.button("🔄 Начать всё заново"):
-        st.session_state.stage = "scraping"
-        st.session_state.current_run_dir = None
-        st.rerun()
+# ---- Tabs Layout ----
+tabs = st.tabs(["🛒 Товары", "📖 Product Bible", "⏳ Очередь", "🏃 Статус", "👀 Проверка", "📦 Экспорт"])
+tab_products, tab_bible, tab_queue, tab_status, tab_review, tab_export = tabs
 
-# ---- Stage 1: Scraping ----
-if st.session_state.stage == "scraping":
-    st.header("1. Сбор товаров")
+# ---- Tab 1: Products ----
+with tab_products:
+    st.header("Сбор товаров")
     seller_url = st.text_input("Ссылка на магазин/продавца WB:", "https://www.wildberries.ru/seller/444343")
 
     if st.button("🔍 Спарсить товары", disabled=not os.path.exists(STATE_FILE)):
@@ -80,125 +70,197 @@ if st.session_state.stage == "scraping":
                     page = context.new_page()
                     stealth_sync(page)
                     products = scrape_wb_products(page, seller_url)
-                    st.session_state.products = products
+
+                    for prod in products:
+                        db.add_product(prod["title"], prod["url"])
+                    st.success(f"Добавлено товаров в БД: {len(products)}")
+
                     browser.close()
                 except Exception as e:
                     st.error(f"Ошибка при парсинге: {e}")
 
-    if st.session_state.products:
-        st.success(f"Найдено товаров: {len(st.session_state.products)}")
-        product_options = {p["title"]: p["url"] for p in st.session_state.products}
-        selected_title = st.selectbox("Выберите товар для генерации Reels:", list(product_options.keys()))
+    st.subheader("База товаров")
+    db_products = db.get_products()
+    if db_products:
+        for p in db_products:
+            with st.expander(f"{p['title']} (ID: {p['id']})"):
+                st.write(p["url"])
+    else:
+        st.info("Нет товаров в базе. Спарсите их.")
 
-        if st.button("Перейти к генерации"):
-            st.session_state.selected_product_url = product_options[selected_title]
-            st.session_state.stage = "ready_to_generate"
-            st.rerun()
+# ---- Tab 2: Product Bible ----
+with tab_bible:
+    st.header("Редактор Product Bible")
+    db_products = db.get_products()
+    if db_products:
+        product_options = {f"{p['title']} (ID: {p['id']})": p['id'] for p in db_products}
+        selected_prod_label = st.selectbox("Выберите товар", list(product_options.keys()))
+        selected_prod_id = product_options[selected_prod_label]
 
-# ---- Stage 2: Ready to Generate (Setup Run) ----
-elif st.session_state.stage == "ready_to_generate":
-    st.header("2. Генерация сценария")
-    st.info(f"Выбран товар: {st.session_state.selected_product_url}")
+        bible = db.get_product_bible(selected_prod_id)
+        is_new_bible = bible is None
+        if is_new_bible:
+             bible = DEFAULT_DACHSHUND_BIBLE
 
-    if st.button("🪄 Составить сценарий (Gemini)"):
-        with st.spinner("Анализ трендов и написание сценария..."):
-            storage = setup_run(st.session_state.selected_product_url, notify_progress)
-            if storage and storage.state["status"] == "ready_for_iteration":
-                st.session_state.current_run_dir = storage.run_dir
-                st.session_state.stage = "iterating"
-                st.rerun()
+        with st.form("bible_form"):
+             b_name = st.text_input("Product Name", bible.get('product_name', ''))
+             b_audience = st.text_area("Target Audience", bible.get('target_audience', ''))
+             b_material = st.text_input("Material", bible.get('material', ''))
+             b_color = st.text_input("Color", bible.get('color', ''))
+             b_must_show = st.text_area("Must Show", bible.get('must_show', ''))
+             b_must_not_show = st.text_area("Must NOT Show (Critical)", bible.get('must_not_show', ''))
+             b_selling_points = st.text_area("Selling Points", bible.get('selling_points', ''))
+             b_usage_scenarios = st.text_area("Usage Scenarios", bible.get('usage_scenarios', ''))
+             b_forbidden = st.text_area("Forbidden Claims", bible.get('forbidden_claims', ''))
 
-# ---- Stage 3: Iterating (Human in the Loop) ----
-elif st.session_state.stage == "iterating":
-    st.header("3. Генерация и Оценка")
+             if st.form_submit_button("Сохранить Product Bible"):
+                 new_bible = {
+                     'product_name': b_name, 'target_audience': b_audience,
+                     'material': b_material, 'color': b_color, 'must_show': b_must_show,
+                     'must_not_show': b_must_not_show, 'selling_points': b_selling_points,
+                     'usage_scenarios': b_usage_scenarios, 'forbidden_claims': b_forbidden
+                 }
+                 db.save_product_bible(selected_prod_id, new_bible)
+                 st.success("Product Bible сохранен!")
+                 st.rerun()
 
-    storage = RunStorage.load(st.session_state.current_run_dir)
-    iterations = storage.state.get("iterations", [])
+        if not is_new_bible:
+             if st.button("Add to queue", key=f"q_{selected_prod_id}"):
+                  db.enqueue_product(selected_prod_id)
+                  st.success(f"Товар {selected_prod_id} добавлен в очередь!")
+        else:
+             st.info("Please save the Product Bible before adding to queue.")
+    else:
+        st.info("Сначала добавьте товары.")
 
-    # Display the current prompt
-    with st.expander("Текущий сценарий / Промпт", expanded=False):
-        st.write(storage.get_latest_prompt())
+# ---- Tab 3: Queue ----
+with tab_queue:
+    st.header("Очередь генерации")
+    queue_items = db.get_queue()
+    if queue_items:
+        for q in queue_items:
+            with st.container(border=True):
+                 st.write(f"**ID в очереди:** {q['id']} | **Товар:** {q['product_title']} | **Статус:** {q['status']}")
+                 if q['status'] in ['pending', 'failed', 'ready_for_iteration']:
+                      if st.button("▶️ Запустить / Продолжить", key=f"run_q_{q['id']}"):
+                           if q['status'] == 'pending':
+                                setup_run(q['product_url'], q['id'], q['product_id'], notify_progress)
+                                st.rerun()
+                           else:
+                                if q['linked_run_id']:
+                                     run_row = db.get_run(q['linked_run_id'])
+                                     if run_row and run_row.get('run_dir'):
+                                          if os.path.exists(run_row['run_dir']):
+                                               storage = RunStorage.load(run_row['run_dir'])
+                                               run_single_iteration(storage, notify_progress)
+                                               st.rerun()
+                                          else:
+                                               st.error("Не удалось найти папку с артефактами (runs).")
+                                     else:
+                                          st.error("run_dir не найден в БД.")
+    else:
+        st.info("Очередь пуста.")
 
-    # If we are waiting for user action (after an iteration)
-    if storage.state["status"] == "awaiting_user_approval":
-        last_iter = iterations[-1]
+# ---- Tab 4: Generation Status ----
+with tab_status:
+    st.header("Статус генерации")
+    runs = db.get_runs()
 
-        st.markdown("### Результат генерации")
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            st.markdown("<div class='video-container'>", unsafe_allow_html=True)
-            if os.path.exists(last_iter["video_path"]):
-                st.video(last_iter["video_path"])
-            else:
-                st.warning("Файл видео не найден.")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        with col2:
-            eval_data = last_iter.get("evaluation", {})
-            st.metric(label="Оценка Gemini", value=f"{eval_data.get('score', 0)} / 10")
-            st.write(f"**Вердикт:** {eval_data.get('reason', '')}")
-            if eval_data.get("problems"):
-                st.write("**Что улучшить:**")
-                for p in eval_data["problems"]:
-                    st.write(f"- {p}")
-
-            st.markdown("---")
-            st.write("Что делаем дальше?")
-
-            # Action Buttons
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("✅ ОК, берем это!", type="primary"):
-                    storage.update_status("completed")
-                    st.session_state.stage = "done"
-                    st.rerun()
-            with c2:
-                if st.button("🔄 Переделать (Итерация +1)"):
-                    storage.update_status("ready_for_iteration")
-                    st.rerun()
-
-    # If we are ready to run the next iteration
-    elif storage.state["status"] == "ready_for_iteration":
-        iter_num = len(iterations) + 1
-        st.info(f"Готов к запуску Итерации #{iter_num}.")
-        if st.button("🎬 Сгенерировать видео"):
-            with st.spinner(f"Работа агента (Итерация {iter_num}). Это может занять несколько минут..."):
-                storage = run_single_iteration(storage, notify_progress)
-                st.rerun()
-
-    elif storage.state["status"] == "failed":
-        st.error("Произошла ошибка во время работы агента. Проверьте логи в терминале.")
-        if st.button("Попробовать снова (Рестарт цикла)"):
-            storage.update_status("ready_for_iteration")
-            st.rerun()
-
-# ---- Stage 4: Done ----
-elif st.session_state.stage == "done":
-    st.header("🎉 Готово!")
-    storage = RunStorage.load(st.session_state.current_run_dir)
-
-    st.success("Вы успешно завершили генерацию Reels!")
-    st.balloons()
-
-    best_video = storage.state.get("best_video_path")
-    if not best_video and storage.state.get("iterations"):
-         # fallback to last video
-         best_video = storage.state["iterations"][-1]["video_path"]
-
-    if best_video and os.path.exists(best_video):
-        st.video(best_video)
-        st.write(f"📁 Видео сохранено: `{best_video}`")
-
-    if st.button("Начать заново с другим товаром"):
-        st.session_state.stage = "scraping"
-        st.rerun()
-
-# ---- History Area ----
-st.sidebar.divider()
-if os.path.exists(OUTPUT_DIR):
-    runs = sorted(os.listdir(OUTPUT_DIR), reverse=True)
     if runs:
-        with st.sidebar.expander("📁 История запусков"):
-             for run in runs[:5]: # show last 5
-                 st.write(f"- `{run}`")
+        for r in runs:
+             st.write(f"**Run ID:** {r['id']} | **Статус:** {r['status']}")
+    else:
+        st.info("Нет активных генераций.")
+
+# ---- Tab 5: Review ----
+with tab_review:
+    st.header("Проверка (Human-in-the-loop)")
+    review_assets = db.get_assets_by_statuses(["human_review", "ai_rejected"])
+
+    if review_assets:
+        for a in review_assets:
+            with st.expander(f"Asset ID: {a['id']} | {a['product_title']} ({a['status']})", expanded=True):
+                 if a['status'] == 'ai_rejected':
+                     st.error("⚠️ Это видео было отклонено AI.")
+                     eval_data = db.get_evaluation(a['id'])
+                     if eval_data and 'evaluation_data' in eval_data:
+                         reject_reasons = eval_data['evaluation_data'].get('reject_reasons', [])
+                         if reject_reasons:
+                             st.write(f"**Причины отклонения:** {', '.join(reject_reasons)}")
+                         st.write(f"Product Identity: {eval_data['evaluation_data'].get('product_identity_accuracy')}, Visibility: {eval_data['evaluation_data'].get('product_visibility')}, Quality: {eval_data['evaluation_data'].get('visual_quality')}")
+
+                 col1, col2 = st.columns([1, 1])
+                 with col1:
+                      if os.path.exists(a['video_path']):
+                          st.video(a['video_path'])
+                      else:
+                          st.error("Видео не найдено на диске.")
+                 with col2:
+                      eval_data = db.get_evaluation(a['id'])
+                      if eval_data:
+                           st.metric(label="Оценка AI", value=f"{eval_data['score']} / 10")
+                           if 'evaluation_data' in eval_data:
+                               st.json(eval_data['evaluation_data'])
+
+                      st.write("---")
+                      c1, c2, c3 = st.columns(3)
+                      with c1:
+                           appr_label = "✅ Одобрить" if a['status'] == "human_review" else "⚠️ Одобрить (Игнорировать AI)"
+                           if st.button(appr_label, key=f"appr_{a['id']}", type="primary"):
+                                db.update_asset_status(a['id'], "human_approved")
+                                db.update_queue_status_by_asset(a['id'], "human_approved")
+                                st.success("Одобрено!")
+                                st.rerun()
+                      with c2:
+                           if st.button("❌ Отклонить окончательно", key=f"rej_{a['id']}"):
+                                db.update_asset_status(a['id'], "human_rejected")
+                                db.update_queue_status_by_asset(a['id'], "human_rejected")
+                                st.warning("Отклонено!")
+                                st.rerun()
+                      with c3:
+                           if st.button("🔄 Сгенерировать следующую итерацию", key=f"iter_{a['id']}"):
+                                if a.get('run_dir'):
+                                    storage = RunStorage.load(a['run_dir'])
+                                    with st.spinner("Генерация следующей итерации..."):
+                                        run_single_iteration(storage, notify_progress)
+                                    st.rerun()
+                                else:
+                                    st.error("Не найден путь к run_dir для генерации итерации.")
+    else:
+        st.info("Нет видео, ожидающих проверки или отклоненных AI.")
+
+# ---- Tab 6: Export ----
+with tab_export:
+    st.header("Экспорт пакета")
+    approved_assets = db.get_assets_by_status("human_approved")
+
+    if approved_assets:
+        for a in approved_assets:
+             with st.container(border=True):
+                  st.write(f"**Asset ID:** {a['id']} | **Товар:** {a['product_title']}")
+                  if st.button("📦 Собрать Post Package", key=f"exp_{a['id']}"):
+                       eval_data = db.get_evaluation(a['id'])
+                       bible_data = db.get_product_bible(a['product_id'])
+                       export_path = export_post_package(
+                           asset_data=a,
+                           evaluation_data=eval_data.get('evaluation_data', {}) if eval_data else {},
+                           product_bible=bible_data if bible_data else {},
+                           prompt_used=a['prompt'],
+                           product_link=a['product_url']
+                       )
+                       if export_path:
+                            db.add_post_package(a['id'], export_path)
+                            db.update_asset_status(a['id'], "exported")
+                            db.update_queue_status_by_asset(a['id'], "exported")
+                            st.success(f"Экспортировано в {export_path}")
+                            st.rerun()
+                       else:
+                            st.error("Ошибка при экспорте.")
+    else:
+        st.info("Нет одобренных видео для экспорта.")
+
+    st.subheader("История экспортов")
+    packages = db.get_post_packages()
+    if packages:
+         for p in packages:
+              st.write(f"- Asset {p['asset_id']} ({p['product_title']}) -> `{p['export_path']}`")

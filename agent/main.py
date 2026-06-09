@@ -10,6 +10,10 @@ from agent.vids import generate_video
 from agent.config import MAX_ITERATIONS as DEFAULT_MAX_ITERATIONS
 from agent.config import MIN_ACCEPTABLE_SCORE as DEFAULT_MIN_ACCEPTABLE_SCORE
 from agent.storage import RunStorage
+import agent.db as db
+from agent.evaluation import determine_asset_status
+from agent.product_bible import format_bible_for_prompt
+import uuid
 
 # Setup basic logging
 logging.basicConfig(
@@ -34,7 +38,7 @@ def notify_cb(progress_callback, msg_type, message, data=None):
     else:
         logger.info(message)
 
-def setup_run(product_url: str, progress_callback=None) -> RunStorage:
+def setup_run(product_url: str, queue_id: int, product_id: int, progress_callback=None) -> RunStorage:
     """
     Initializes the run storage and gets the initial prompt from Gemini.
     Returns the initialized RunStorage object.
@@ -43,10 +47,20 @@ def setup_run(product_url: str, progress_callback=None) -> RunStorage:
         notify_cb(progress_callback, "error", "Ссылка не может быть пустой.")
         return None
 
+    run_id = uuid.uuid4().hex[:8]
+    db.create_run(run_id, product_id, queue_id)
+    db.update_queue_status(queue_id, "running", linked_run_id=run_id)
+
     notify_cb(progress_callback, "info", "Инициализация хранилища запуска...")
     storage = RunStorage()
-    storage.init_run(product_url)
+    storage.init_run(product_url, run_id=run_id)
+    storage.state["run_id"] = run_id
+    storage.state["queue_id"] = queue_id
+    db.update_run_dir(run_id, storage.run_dir)
     notify_cb(progress_callback, "info", f"Папка запуска: {storage.run_dir}")
+
+    bible_data = db.get_product_bible(product_id)
+    bible_str = format_bible_for_prompt(bible_data)
 
     notify_cb(progress_callback, "info", "Подключение к Gemini...")
     with sync_playwright() as playwright:
@@ -63,17 +77,21 @@ def setup_run(product_url: str, progress_callback=None) -> RunStorage:
 
         notify_cb(progress_callback, "info", "Анализ трендов и получение начального промпта от Gemini...")
         try:
-            gemini_response = get_initial_prompt(gemini_page, product_url)
+            gemini_response = get_initial_prompt(gemini_page, product_url, bible_str)
             prompt_data = extract_initial_prompt_from_response(gemini_response)
 
             storage.save_prompt("iter_00_initial.json", json.dumps(prompt_data, ensure_ascii=False, indent=2))
             notify_cb(progress_callback, "prompt", f"Сценарий готов", data=prompt_data)
             storage.update_status("ready_for_iteration")
+            db.update_run_status(run_id, "ready_for_iteration")
+            db.update_queue_status(queue_id, "ready_for_iteration")
 
         except Exception as e:
             notify_cb(progress_callback, "error", f"Ошибка при получении начального промпта: {e}")
             capture_screenshot(gemini_page, storage, "error_initial_prompt.png")
             storage.update_status("failed")
+            db.update_run_status(run_id, "failed")
+            db.update_queue_status(queue_id, "failed")
 
         gemini_page.wait_for_timeout(3000)
         browser.close()
@@ -86,11 +104,18 @@ def run_single_iteration(storage: RunStorage, progress_callback=None):
     """
     iteration = len(storage.state.get("iterations", [])) + 1
     current_prompt = storage.get_latest_prompt()
+    run_id = storage.state.get("run_id")
+    queue_id = storage.state.get("queue_id")
 
-    if not current_prompt:
-        notify_cb(progress_callback, "error", "Не найден промпт для генерации. Прерывание.")
+    if not current_prompt or not run_id:
+        notify_cb(progress_callback, "error", "Не найден промпт или run_id для генерации. Прерывание.")
         storage.update_status("failed")
+        if run_id:
+             db.update_run_status(run_id, "failed")
+             db.update_queue_status(queue_id, "failed")
         return storage
+
+    db.update_run_status(run_id, "running")
 
     notify_cb(progress_callback, "info", f"=== ИТЕРАЦИЯ {iteration} ===")
 
@@ -115,10 +140,15 @@ def run_single_iteration(storage: RunStorage, progress_callback=None):
             output_video_path = storage.get_video_path(iteration)
             video_path = generate_video(vids_page, current_prompt, iteration, output_video_path)
             notify_cb(progress_callback, "video", f"Видео сгенерировано", data={"path": video_path})
+
+            asset_id = db.add_generated_asset(run_id, iteration, video_path, current_prompt)
+            db.update_queue_status(queue_id, "running", latest_asset_id=asset_id)
         except Exception as e:
             notify_cb(progress_callback, "error", f"Ошибка при генерации видео: {e}")
             capture_screenshot(vids_page, storage, f"error_vids_iter_{iteration}.png")
             storage.update_status("failed")
+            db.update_run_status(run_id, "failed")
+            db.update_queue_status(queue_id, "failed")
             browser.close()
             return storage
 
@@ -126,23 +156,45 @@ def run_single_iteration(storage: RunStorage, progress_callback=None):
         notify_cb(progress_callback, "info", "Оценка видео в Gemini...")
         try:
             gemini_page.bring_to_front()
-            gemini_eval_response = evaluate_video(gemini_page, video_path)
+
+            # Fetch product bible for evaluation
+            run_row = db.get_run(run_id)
+            bible_str = ""
+            if run_row:
+                 bible_data = db.get_product_bible(run_row['product_id'])
+                 bible_str = format_bible_for_prompt(bible_data)
+
+            gemini_eval_response = evaluate_video(gemini_page, video_path, bible_str)
             eval_data = extract_evaluation_from_response(gemini_eval_response)
 
             storage.save_evaluation(f"iter_{iteration:02d}.json", eval_data)
             storage.record_iteration(iteration, current_prompt, video_path, eval_data)
 
-            notify_cb(progress_callback, "eval", "Оценка получена", data=eval_data)
+            score = float(eval_data.get("score", 0))
+            db.add_evaluation(asset_id, eval_data, score)
+
+            asset_status = determine_asset_status(eval_data)
+            db.update_asset_status(asset_id, asset_status)
+
+            notify_cb(progress_callback, "eval", f"Оценка получена. Вердикт: {asset_status}", data=eval_data)
 
             current_prompt = eval_data["improved_prompt"]
             storage.save_prompt(f"iter_{iteration:02d}_improved.json", json.dumps({"improved_prompt": current_prompt}, ensure_ascii=False, indent=2))
 
             storage.update_status("awaiting_user_approval")
+            db.update_run_status(run_id, "awaiting_user_approval")
+
+            if asset_status == "human_review":
+                 db.update_queue_status(queue_id, "human_review")
+            else:
+                 db.update_queue_status(queue_id, "ai_rejected")
 
         except Exception as e:
              notify_cb(progress_callback, "error", f"Ошибка при оценке видео в Gemini: {e}")
              capture_screenshot(gemini_page, storage, f"error_gemini_eval_iter_{iteration}.png")
              storage.update_status("failed")
+             db.update_run_status(run_id, "failed")
+             db.update_queue_status(queue_id, "failed")
 
         gemini_page.wait_for_timeout(3000)
         browser.close()
@@ -153,8 +205,12 @@ def run_agent_cycle_cli(product_url, max_iterations=DEFAULT_MAX_ITERATIONS, min_
     """
     Original monolithic loop behavior for CLI usage.
     """
-    storage = setup_run(product_url)
-    if storage.state["status"] == "failed":
+    import agent.db as db
+    product_id = db.add_product("CLI Product", product_url)
+    queue_id = db.enqueue_product(product_id)
+
+    storage = setup_run(product_url, queue_id, product_id)
+    if not storage or storage.state["status"] == "failed":
         return
 
     iteration = 1
@@ -181,6 +237,9 @@ def run_agent_cycle_cli(product_url, max_iterations=DEFAULT_MAX_ITERATIONS, min_
         iteration += 1
 
 def main():
+    import agent.db as db
+    db.init_db()
+
     parser = argparse.ArgumentParser(description="Автономный агент для создания Reels")
     parser.add_argument("--url", type=str, help="Ссылка на товар")
     parser.add_argument("--iterations", type=int, default=DEFAULT_MAX_ITERATIONS, help="Максимальное количество итераций")

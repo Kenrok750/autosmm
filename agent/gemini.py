@@ -49,7 +49,7 @@ def wait_for_new_gemini_response(page: Page, previous_message_count: int, timeou
 
     raise TimeoutError(f"Превышено время ожидания стабилизации ответа от Gemini ({timeout} сек).")
 
-def get_initial_prompt(page: Page, product_link: str) -> str:
+def get_initial_prompt(page: Page, product_link: str, product_bible_str: str = "") -> str:
     """
     Sends the initial request to Gemini to get a video script/prompt.
     """
@@ -65,7 +65,10 @@ def get_initial_prompt(page: Page, product_link: str) -> str:
 Действуй как эксперт по вирусному контенту в соцсетях. Твоя задача — проанализировать текущие тренды TikTok и Instagram Reels для этой категории товаров на основе своих знаний, и создать сценарий для видео, который гарантированно соберет просмотры.
 Товар находится по этой ссылке: {product_link}.
 
+{product_bible_str}
+
 Изучи, какие форматы, хуки (зацепки) и визуальные стили сейчас популярны для подобных товаров. Напиши детальный сценарий и промпт для AI-генератора видео (Google Vids / Runway и тд).
+Учитывай все требования и ограничения из Product Bible.
 Промпт для генератора должен быть на английском языке.
 
 ОБЯЗАТЕЛЬНО ответь ТОЛЬКО в формате JSON, без какого-либо дополнительного текста, приветствий или форматирования markdown (без ```json).
@@ -103,7 +106,7 @@ def wait_for_file_attachment_ready(page: Page, timeout: int = 60):
     page.wait_for_timeout(10000)
     logger.info("Файл должен быть загружен.")
 
-def evaluate_video(page: Page, video_path: str) -> str:
+def evaluate_video(page: Page, video_path: str, product_bible_str: str = "") -> str:
     """
     Uploads a video to Gemini and asks for evaluation and a new prompt.
     """
@@ -126,26 +129,30 @@ def evaluate_video(page: Page, video_path: str) -> str:
 
     previous_count = page.locator("message-content").count()
 
-    eval_prompt = """
+    eval_prompt = f"""
 Посмотри это сгенерированное видео для нашего Reels/TikTok. Действуй как строгий продюсер вирусного контента.
+
+{product_bible_str}
+
 Оцени видео: цепляет ли оно внимание с первой секунды? Понятен ли товар? Подходит ли оно под современные тренды коротких видео?
-Если видео недостаточно динамичное или не цепляет, напиши улучшенный, более детальный промпт на английском языке для генерации лучшей версии этого видео. Исправь ошибки прошлой генерации.
+Особенно важно проверить соответствие видео требованиям из Product Bible (если предоставлены). Не превратился ли товар в нечто другое? Соблюдены ли ограничения?
+
+Если видео недостаточно динамичное, не цепляет, или нарушает Product Bible, напиши улучшенный, более детальный промпт на английском языке для генерации лучшей версии этого видео. Исправь ошибки прошлой генерации.
 
 ОБЯЗАТЕЛЬНО ответь ТОЛЬКО в формате JSON, без какого-либо дополнительного текста, приветствий или форматирования markdown (без ```json).
 Структура JSON должна быть строго такой:
-{
+{{
   "score": 0-10,
   "hook_score": 0-10,
   "product_visibility": 0-10,
-  "viral_potential": 0-10,
+  "product_identity_accuracy": 0-10,
+  "use_case_clarity": 0-10,
+  "purchase_intent": 0-10,
   "visual_quality": 0-10,
-  "clarity": 0-10,
-  "cta_strength": 0-10,
-  "reason": "Краткая причина оценки (на русском)",
-  "problems": ["Проблема 1", "Проблема 2"],
-  "improved_prompt": "Твой улучшенный промпт на английском",
-  "next_strategy": "Следующая стратегия (на русском)"
-}
+  "reject_reasons": ["wrong_product", "morphed_product", "wrong_color", "real_dog_instead_of_keychain", "missing_chain_or_ring", "product_not_visible", "unsafe_or_misleading_claim", "other_reason_here"],
+  "approved_for_human_review": false,
+  "improved_prompt": "Твой улучшенный промпт на английском"
+}}
 """
     input_box.fill(eval_prompt)
     input_box.press("Enter")
