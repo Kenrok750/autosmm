@@ -30,29 +30,35 @@ def export_post_package(asset_data: dict, evaluation_data: dict, product_bible: 
     dest_video_path = os.path.join(export_path, "final_video.mp4")
     shutil.copy2(asset_data['video_path'], dest_video_path)
 
+    product_name = product_bible.get("product_name", "Awesome Product")
+    color = product_bible.get("color", "")
+    material = product_bible.get("material", "")
+    selling_points = product_bible.get("selling_points", "Must have!")
+    usage_scenarios = product_bible.get("usage_scenarios", "")
+
     # 2. cover_prompt.txt
     with open(os.path.join(export_path, "cover_prompt.txt"), "w", encoding="utf-8") as f:
-        f.write("A hyper-realistic close-up of a glossy black articulated dachshund keychain...")
+        f.write(f"A hyper-realistic close-up of a {color} {product_name} made of {material}...")
 
     # 3. tiktok_caption.txt
     with open(os.path.join(export_path, "tiktok_caption.txt"), "w", encoding="utf-8") as f:
-        f.write("Check out this cute articulated dachshund! 🐕‍🦺✨ #3dprinting #keychain")
+        f.write(f"Check out this {product_name}! ✨ {selling_points}")
 
     # 4. reels_caption.txt
     with open(os.path.join(export_path, "reels_caption.txt"), "w", encoding="utf-8") as f:
-        f.write("Wait until you see how this keychain moves... 😍 #dachshund #giftideas")
+        f.write(f"Perfect for: {usage_scenarios}. Get your {product_name} today! 😍")
 
     # 5. shorts_title.txt
     with open(os.path.join(export_path, "shorts_title.txt"), "w", encoding="utf-8") as f:
-        f.write("The PERFECT gift for dachshund lovers 🎁")
+        f.write(f"The PERFECT {product_name} 🎁")
 
     # 6. vk_caption.txt
     with open(os.path.join(export_path, "vk_caption.txt"), "w", encoding="utf-8") as f:
-        f.write("Идеальный брелок для ключей! Заказать можно по ссылке ниже 👇")
+        f.write(f"Идеальный {product_name}! Заказать можно по ссылке ниже 👇")
 
     # 7. hashtags.txt
     with open(os.path.join(export_path, "hashtags.txt"), "w", encoding="utf-8") as f:
-        f.write("#dachshund #keychain #gift #3dprinted #cute")
+        f.write("#musthave #giftideas #trending")
 
     # 8. product_link.txt
     with open(os.path.join(export_path, "product_link.txt"), "w", encoding="utf-8") as f:

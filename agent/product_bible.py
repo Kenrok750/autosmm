@@ -1,10 +1,10 @@
 DEFAULT_DACHSHUND_BIBLE = {
     "product_name": "Glossy Black Articulated Dachshund Keychain",
-    "target_audience": "Dog lovers, dachshund owners, keychain collectors, people who like 3D printed gadgets.",
+    "target_audience": "girls/women 14-35, students, bag/pencil-case accessory buyers",
     "material": "SLA resin / rigid plastic",
     "color": "Glossy Black",
-    "must_show": "The metallic keychain ring/chain attached to the dog. The articulation (the body bending or moving). The glossy plastic texture reflecting light.",
-    "must_not_show": "Real animal fur. Real dogs. Photorealistic biological dogs. Morphing into a real animal. Matte or rough textures.",
+    "must_show": "glossy black articulated dachshund keychain, segmented flexible body, short legs, metal chain/ring, attached to pencil case/bag/keys",
+    "must_not_show": "real dog, plush toy, fur, extra legs, wrong color, missing ring/chain, material change, gold/silver recolor unless explicitly requested",
     "selling_points": "Cute, articulated (moves satisfyingly), durable, perfect gift.",
     "usage_scenarios": "Hanging on a backpack, twirling on car keys, holding in hand to show movement.",
     "forbidden_claims": "Indestructible, real metal, suitable for small children (choking hazard)."

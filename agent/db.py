@@ -62,6 +62,7 @@ def init_db():
             product_id INTEGER,
             queue_id INTEGER,
             status TEXT,
+            run_dir TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(queue_id) REFERENCES queue(id)
@@ -171,6 +172,14 @@ def get_product_bible(product_id: int) -> Optional[Dict[str, Any]]:
     conn.close()
     return dict(row) if row else None
 
+def get_runs() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM generation_runs ORDER BY created_at DESC")
+    runs = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return runs
+
 # Queue methods
 def enqueue_product(product_id: int, content_format: str = "reels", priority: int = 0) -> int:
     conn = get_db_connection()
@@ -227,6 +236,21 @@ def update_run_status(run_id: str, status: str):
     conn.commit()
     conn.close()
 
+def update_run_dir(run_id: str, run_dir: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE generation_runs SET run_dir = ? WHERE id = ?", (run_dir, run_id))
+    conn.commit()
+    conn.close()
+
+def get_run(run_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM generation_runs WHERE id = ?", (run_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 # Asset methods
 def add_generated_asset(run_id: str, iteration: int, video_path: str, prompt: str) -> int:
     conn = get_db_connection()
@@ -259,13 +283,29 @@ def get_assets_by_status(status: str) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT a.*, r.product_id, p.title as product_title, p.url as product_url
+        SELECT a.*, r.product_id, r.run_dir, p.title as product_title, p.url as product_url
         FROM generated_assets a
         JOIN generation_runs r ON a.run_id = r.id
         JOIN products p ON r.product_id = p.id
         WHERE a.status = ?
         ORDER BY a.created_at DESC
     """, (status,))
+    assets = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return assets
+
+def get_assets_by_statuses(statuses: List[str]) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    placeholders = ', '.join(['?'] * len(statuses))
+    cursor.execute(f"""
+        SELECT a.*, r.product_id, r.run_dir, r.queue_id, p.title as product_title, p.url as product_url
+        FROM generated_assets a
+        JOIN generation_runs r ON a.run_id = r.id
+        JOIN products p ON r.product_id = p.id
+        WHERE a.status IN ({placeholders})
+        ORDER BY a.created_at DESC
+    """, statuses)
     assets = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return assets
@@ -318,6 +358,3 @@ def get_post_packages() -> List[Dict[str, Any]]:
     packages = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return packages
-
-# Initialize when imported
-init_db()

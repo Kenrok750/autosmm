@@ -12,6 +12,9 @@ from agent.storage import RunStorage
 from agent.product_bible import DEFAULT_DACHSHUND_BIBLE
 from agent.exporter import export_post_package
 
+# Initialize DB on startup
+db.init_db()
+
 st.set_page_config(page_title="Reels Factory", page_icon="🎬", layout="wide")
 
 st.title("🎬 Фабрика Reels: Human-in-the-Loop")
@@ -82,9 +85,6 @@ with tab_products:
         for p in db_products:
             with st.expander(f"{p['title']} (ID: {p['id']})"):
                 st.write(p["url"])
-                if st.button("В очередь", key=f"q_{p['id']}"):
-                    db.enqueue_product(p['id'])
-                    st.success(f"Товар {p['id']} добавлен в очередь!")
     else:
         st.info("Нет товаров в базе. Спарсите их.")
 
@@ -98,7 +98,8 @@ with tab_bible:
         selected_prod_id = product_options[selected_prod_label]
 
         bible = db.get_product_bible(selected_prod_id)
-        if not bible:
+        is_new_bible = bible is None
+        if is_new_bible:
              bible = DEFAULT_DACHSHUND_BIBLE
 
         with st.form("bible_form"):
@@ -121,6 +122,14 @@ with tab_bible:
                  }
                  db.save_product_bible(selected_prod_id, new_bible)
                  st.success("Product Bible сохранен!")
+                 st.rerun()
+
+        if not is_new_bible:
+             if st.button("Add to queue", key=f"q_{selected_prod_id}"):
+                  db.enqueue_product(selected_prod_id)
+                  st.success(f"Товар {selected_prod_id} добавлен в очередь!")
+        else:
+             st.info("Please save the Product Bible before adding to queue.")
     else:
         st.info("Сначала добавьте товары.")
 
@@ -139,27 +148,23 @@ with tab_queue:
                                 st.rerun()
                            else:
                                 if q['linked_run_id']:
-                                     run_row = db.get_db_connection().execute("SELECT * FROM generation_runs WHERE id=?", (q['linked_run_id'],)).fetchone()
-                                     if run_row:
-                                          storage_path = ""
-                                          # Try to find run directory based on run_id
-                                          import glob
-                                          dirs = glob.glob(f"runs/*_{q['linked_run_id']}")
-                                          if dirs:
-                                               storage = RunStorage.load(dirs[0])
+                                     run_row = db.get_run(q['linked_run_id'])
+                                     if run_row and run_row.get('run_dir'):
+                                          if os.path.exists(run_row['run_dir']):
+                                               storage = RunStorage.load(run_row['run_dir'])
                                                run_single_iteration(storage, notify_progress)
                                                st.rerun()
                                           else:
                                                st.error("Не удалось найти папку с артефактами (runs).")
+                                     else:
+                                          st.error("run_dir не найден в БД.")
     else:
         st.info("Очередь пуста.")
 
 # ---- Tab 4: Generation Status ----
 with tab_status:
     st.header("Статус генерации")
-    conn = db.get_db_connection()
-    runs = conn.execute("SELECT * FROM generation_runs ORDER BY created_at DESC").fetchall()
-    conn.close()
+    runs = db.get_runs()
 
     if runs:
         for r in runs:
@@ -170,11 +175,20 @@ with tab_status:
 # ---- Tab 5: Review ----
 with tab_review:
     st.header("Проверка (Human-in-the-loop)")
-    review_assets = db.get_assets_by_status("human_review")
+    review_assets = db.get_assets_by_statuses(["human_review", "ai_rejected"])
 
     if review_assets:
         for a in review_assets:
-            with st.expander(f"Asset ID: {a['id']} | {a['product_title']}", expanded=True):
+            with st.expander(f"Asset ID: {a['id']} | {a['product_title']} ({a['status']})", expanded=True):
+                 if a['status'] == 'ai_rejected':
+                     st.error("⚠️ Это видео было отклонено AI.")
+                     eval_data = db.get_evaluation(a['id'])
+                     if eval_data and 'evaluation_data' in eval_data:
+                         reject_reasons = eval_data['evaluation_data'].get('reject_reasons', [])
+                         if reject_reasons:
+                             st.write(f"**Причины отклонения:** {', '.join(reject_reasons)}")
+                         st.write(f"Product Identity: {eval_data['evaluation_data'].get('product_identity_accuracy')}, Visibility: {eval_data['evaluation_data'].get('product_visibility')}, Quality: {eval_data['evaluation_data'].get('visual_quality')}")
+
                  col1, col2 = st.columns([1, 1])
                  with col1:
                       if os.path.exists(a['video_path']):
@@ -189,19 +203,29 @@ with tab_review:
                                st.json(eval_data['evaluation_data'])
 
                       st.write("---")
-                      c1, c2 = st.columns(2)
+                      c1, c2, c3 = st.columns(3)
                       with c1:
-                           if st.button("✅ Одобрить", key=f"appr_{a['id']}", type="primary"):
+                           appr_label = "✅ Одобрить" if a['status'] == "human_review" else "⚠️ Одобрить (Игнорировать AI)"
+                           if st.button(appr_label, key=f"appr_{a['id']}", type="primary"):
                                 db.update_asset_status(a['id'], "human_approved")
                                 st.success("Одобрено!")
                                 st.rerun()
                       with c2:
-                           if st.button("❌ Отклонить", key=f"rej_{a['id']}"):
+                           if st.button("❌ Отклонить окончательно", key=f"rej_{a['id']}"):
                                 db.update_asset_status(a['id'], "human_rejected")
                                 st.warning("Отклонено!")
                                 st.rerun()
+                      with c3:
+                           if st.button("🔄 Сгенерировать следующую итерацию", key=f"iter_{a['id']}"):
+                                if a.get('run_dir'):
+                                    storage = RunStorage.load(a['run_dir'])
+                                    with st.spinner("Генерация следующей итерации..."):
+                                        run_single_iteration(storage, notify_progress)
+                                    st.rerun()
+                                else:
+                                    st.error("Не найден путь к run_dir для генерации итерации.")
     else:
-        st.info("Нет видео, ожидающих проверки человеком.")
+        st.info("Нет видео, ожидающих проверки или отклоненных AI.")
 
 # ---- Tab 6: Export ----
 with tab_export:

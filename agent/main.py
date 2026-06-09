@@ -56,6 +56,7 @@ def setup_run(product_url: str, queue_id: int, product_id: int, progress_callbac
     storage.init_run(product_url, run_id=run_id)
     storage.state["run_id"] = run_id
     storage.state["queue_id"] = queue_id
+    db.update_run_dir(run_id, storage.run_dir)
     notify_cb(progress_callback, "info", f"Папка запуска: {storage.run_dir}")
 
     bible_data = db.get_product_bible(product_id)
@@ -83,6 +84,7 @@ def setup_run(product_url: str, queue_id: int, product_id: int, progress_callbac
             notify_cb(progress_callback, "prompt", f"Сценарий готов", data=prompt_data)
             storage.update_status("ready_for_iteration")
             db.update_run_status(run_id, "ready_for_iteration")
+            db.update_queue_status(queue_id, "ready_for_iteration")
 
         except Exception as e:
             notify_cb(progress_callback, "error", f"Ошибка при получении начального промпта: {e}")
@@ -156,7 +158,7 @@ def run_single_iteration(storage: RunStorage, progress_callback=None):
             gemini_page.bring_to_front()
 
             # Fetch product bible for evaluation
-            run_row = db.get_db_connection().execute("SELECT product_id FROM generation_runs WHERE id = ?", (run_id,)).fetchone()
+            run_row = db.get_run(run_id)
             bible_str = ""
             if run_row:
                  bible_data = db.get_product_bible(run_row['product_id'])
