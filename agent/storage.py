@@ -18,11 +18,11 @@ class RunStorage:
             "best_video_path": None,
         }
 
-    def init_run(self, input_url: str):
+    def init_run(self, input_url: str, run_id: str = None):
         os.makedirs(self.base_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         slug = re.sub(r'[^a-zA-Z0-9]', '_', input_url)[:20]
-        uid = uuid.uuid4().hex[:6]
+        uid = run_id if run_id else uuid.uuid4().hex[:6]
 
         self.run_dir = os.path.join(self.base_dir, f"{timestamp}_{slug}_{uid}")
         os.makedirs(self.run_dir, exist_ok=True)
