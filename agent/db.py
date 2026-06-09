@@ -62,12 +62,16 @@ def init_db():
             product_id INTEGER,
             queue_id INTEGER,
             status TEXT,
-            run_dir TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(queue_id) REFERENCES queue(id)
         )
     """)
+
+    cursor.execute("PRAGMA table_info(generation_runs)")
+    columns = [info["name"] for info in cursor.fetchall()]
+    if "run_dir" not in columns:
+        cursor.execute("ALTER TABLE generation_runs ADD COLUMN run_dir TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS generated_assets (
@@ -215,6 +219,22 @@ def update_queue_status(queue_id: int, status: str, linked_run_id: Optional[str]
         cursor.execute("UPDATE queue SET status = ?, latest_asset_id = ? WHERE id = ?", (status, latest_asset_id, queue_id))
     else:
          cursor.execute("UPDATE queue SET status = ? WHERE id = ?", (status, queue_id))
+    conn.commit()
+    conn.close()
+
+def update_queue_status_by_asset(asset_id: int, status: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE queue
+        SET status = ?
+        WHERE id = (
+            SELECT r.queue_id
+            FROM generation_runs r
+            JOIN generated_assets a ON r.id = a.run_id
+            WHERE a.id = ?
+        )
+    """, (status, asset_id))
     conn.commit()
     conn.close()
 

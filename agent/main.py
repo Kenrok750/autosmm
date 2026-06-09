@@ -237,6 +237,9 @@ def run_agent_cycle_cli(product_url, max_iterations=DEFAULT_MAX_ITERATIONS, min_
         iteration += 1
 
 def main():
+    import agent.db as db
+    db.init_db()
+
     parser = argparse.ArgumentParser(description="Автономный агент для создания Reels")
     parser.add_argument("--url", type=str, help="Ссылка на товар")
     parser.add_argument("--iterations", type=int, default=DEFAULT_MAX_ITERATIONS, help="Максимальное количество итераций")

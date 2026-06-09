@@ -208,11 +208,13 @@ with tab_review:
                            appr_label = "✅ Одобрить" if a['status'] == "human_review" else "⚠️ Одобрить (Игнорировать AI)"
                            if st.button(appr_label, key=f"appr_{a['id']}", type="primary"):
                                 db.update_asset_status(a['id'], "human_approved")
+                                db.update_queue_status_by_asset(a['id'], "human_approved")
                                 st.success("Одобрено!")
                                 st.rerun()
                       with c2:
                            if st.button("❌ Отклонить окончательно", key=f"rej_{a['id']}"):
                                 db.update_asset_status(a['id'], "human_rejected")
+                                db.update_queue_status_by_asset(a['id'], "human_rejected")
                                 st.warning("Отклонено!")
                                 st.rerun()
                       with c3:
@@ -249,6 +251,7 @@ with tab_export:
                        if export_path:
                             db.add_post_package(a['id'], export_path)
                             db.update_asset_status(a['id'], "exported")
+                            db.update_queue_status_by_asset(a['id'], "exported")
                             st.success(f"Экспортировано в {export_path}")
                             st.rerun()
                        else:
